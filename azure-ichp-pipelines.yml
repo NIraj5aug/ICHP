@@ -1,0 +1,89 @@
+trigger:
+  branches:
+    include:
+    - master
+  paths:
+    include:
+    - /ichp_deployment_using_secrets/*
+
+stages:
+- stage: build
+  displayName: "Build and Scan image"
+  jobs: 
+    - job: 'build'
+      pool:
+        vmImage: 'ubuntu-latest'
+      steps:
+        - task: Docker@2
+          inputs:
+            containerRegistry: 'P03278P03278EngineeringSamples-ACR'
+            command: login
+
+        - script:
+            docker build ./ichp_deployment_using_secrets -t p03278p03278engineeringsamples.azurecr.io/ubuntu:latest
+
+        - task: CDaaSContainerScanning@2
+          inputs:
+            acrEndpoint: 'P03278P03278EngineeringSamples-ACR'
+            fullImageNameAndTag: 'p03278p03278engineeringsamples.azurecr.io/ubuntu:latest'
+
+        - script:
+            docker push p03278p03278engineeringsamples.azurecr.io/ubuntu:latest
+
+        - task: CopyFiles@2
+          inputs:
+            SourceFolder: '.'
+            Contents: |
+              ichp_deployment_using_secrets/deployment/secrets.yaml
+              ichp_deployment_using_secrets/deployment/deployment.yaml
+            TargetFolder: '$(Build.ArtifactStagingDirectory)'
+            OverWrite: true
+
+        - task: PublishBuildArtifacts@1
+          inputs:
+             PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+             ArtifactName: 'deployment_files'
+             publishLocation: 'Container'
+
+- stage: Deploy
+  displayName: 'Deploy image using secrets'
+  jobs:
+  - deployment: Deploy
+    displayName: Deploy
+    environment: target-env
+    pool:
+      name: 'CDaaSLinux'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: AzureKeyVault@1
+            inputs:
+              azureSubscription: 'azure-keyvault-INGOneGP03278'
+              KeyVaultName: 'INGOneGP03278KvB'
+              SecretsFilter: '*'
+              RunAsPreJob: false
+
+          - task: qetza.replacetokens.replacetokens-task.replacetokens@3
+            inputs:
+                rootDirectory: '$(Pipeline.Workspace)'
+                targetFiles: 'deployment_files/ichp_deployment_using_secrets/deployment/secrets.yaml'
+                encoding: 'auto'
+                writeBOM: true
+                actionOnMissing: 'warn'
+                keepToken: false
+                tokenPrefix: '#{'
+                tokenSuffix: '}#'
+                useLegacyPattern: false
+                enableTelemetry: true
+
+          - task: CDaaSContainerDeploy@1
+            displayName: 'Container Deploy'
+            inputs:
+              cdaasICHPServiceEndpoint: 'P03278-p03278-dev-dcr.non-prod-ICHP'
+              acrEndpoint: 'P03278P03278EngineeringSamples-ACR'
+              writeArtifactoryEndpoint: 'p03278-engineeringsamples-write'
+              readArtifactoryEndpoint: 'p03278-EngineeringSamples-read'
+              command: 'apply'
+              arguments: '-f $(Pipeline.Workspace)/deployment_files/ichp_deployment_using_secrets/deployment/'
